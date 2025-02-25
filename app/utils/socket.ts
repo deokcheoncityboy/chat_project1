@@ -9,7 +9,7 @@ export const initializeSocket = (): Socket => {
   if (!socket) {
     const serverUrl = process.env.NODE_ENV === 'production'
       ? process.env.SERVER_URL || ''
-      : 'http://localhost:8080';
+      : 'https://chat-project1-backend.onrender.com';
       
     socket = io(serverUrl);
     
