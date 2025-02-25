@@ -192,6 +192,9 @@ io.on('connection', (socket) => {
       };
       
       // 메시지 읽음 상태 초기화 - 자신은 이미 읽음
+      if (!messageReadStatus[room]) {
+        messageReadStatus[room] = {};
+      }
       messageReadStatus[room][messageId] = [userInfo.username];
       
       // 최근 메시지 업데이트
@@ -206,35 +209,55 @@ io.on('connection', (socket) => {
         userStatus[userInfo.username].lastActive = new Date();
       }
       
-      // 이 방법으로 먼저 시도 (socket.to)
-      socket.to(room).emit('receive_message', messageWithId);
+      // 전송 확인 응답
+      socket.emit('message_sent_confirmation', { 
+        status: 'success', 
+        messageId 
+      });
       
-      // 소켓이 방에 제대로 조인되어 있는지 확인
-      const socketsInRoom = Array.from(io.sockets.adapter.rooms.get(room) || []);
-      console.log(`방 ${room}의 현재 소켓 IDs:`, socketsInRoom);
-      
-      // 백업 방법: 모든 소켓에게 직접 메시지 전송 (현재 소켓 제외)
-      if (socketsInRoom.length > 0) {
-        socketsInRoom.forEach(socketId => {
-          if (socketId !== socket.id) { // 자기 자신에게는 보내지 않음
-            console.log(`직접 메시지 전송 to ${socketId}`);
-            io.to(socketId).emit('receive_message', messageWithId);
-          }
+      try {
+        // 이 방법으로 먼저 시도 (socket.to)
+        console.log(`socket.to(${room}) 방식으로 메시지 브로드캐스트 시도`);
+        socket.to(room).emit('receive_message', messageWithId);
+        
+        // 소켓이 방에 제대로 조인되어 있는지 확인
+        const socketsInRoom = Array.from(io.sockets.adapter.rooms.get(room) || []);
+        console.log(`방 ${room}의 현재 소켓 IDs:`, socketsInRoom);
+        
+        // 백업 방법: 모든 소켓에게 직접 메시지 전송 (현재 소켓 제외)
+        if (socketsInRoom.length > 0) {
+          socketsInRoom.forEach(socketId => {
+            if (socketId !== socket.id) { // 자기 자신에게는 보내지 않음
+              console.log(`직접 메시지 전송 to ${socketId}`);
+              io.to(socketId).emit('receive_message', messageWithId);
+            }
+          });
+        } else {
+          console.warn(`경고: 방 ${room}에 다른 소켓이 없습니다.`);
+        }
+        
+        // 세 번째 방법: 방 전체에 메시지 브로드캐스트 (자신 포함)
+        console.log(`io.to(${room}) 방식으로 브로드캐스트 시도 (자신 제외하도록 클라이언트에서 처리)`);
+        io.in(room).emit('receive_message_all', {
+          ...messageWithId,
+          senderId: socket.id // 클라이언트에서 자신의 메시지를 필터링할 수 있도록 발신자 ID 추가
         });
-      } else {
-        console.warn(`경고: 방 ${room}에 다른 소켓이 없습니다.`);
+        
+        // 활성 채팅방 목록 업데이트 이벤트 발송 (최근 메시지 포함)
+        const activeRooms = Object.keys(rooms).map(roomName => ({
+          room: roomName,
+          count: Object.keys(rooms[roomName]).length,
+          lastMessage: roomLastMessages[roomName] || null,
+          lastActivity: roomLastMessages[roomName] ? roomLastMessages[roomName].timestamp : null
+        }));
+        io.emit('active_rooms', { rooms: activeRooms });
+        
+        console.log(`Message in ${room} from ${socket.id}: ${data.message}`);
+        
+      } catch (error) {
+        console.error(`메시지 브로드캐스트 중 오류 발생:`, error);
+        socket.emit('message_error', { error: '메시지 전송 중 오류가 발생했습니다.' });
       }
-      
-      // 활성 채팅방 목록 업데이트 이벤트 발송 (최근 메시지 포함)
-      const activeRooms = Object.keys(rooms).map(roomName => ({
-        room: roomName,
-        count: Object.keys(rooms[roomName]).length,
-        lastMessage: roomLastMessages[roomName] || null,
-        lastActivity: roomLastMessages[roomName] ? roomLastMessages[roomName].timestamp : null
-      }));
-      io.emit('active_rooms', { rooms: activeRooms });
-      
-      console.log(`Message in ${room} from ${socket.id}: ${data.message}`);
     } else {
       console.error(`오류: userInfo가 없음, 소켓ID=${socket.id}`);
       // 소켓 재연결 시도
