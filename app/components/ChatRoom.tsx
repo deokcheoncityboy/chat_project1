@@ -509,10 +509,22 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
                 {messageContent.imageUrl && (
                   <div className="mb-2">
                     <img 
-                      src={messageContent.imageUrl} 
+                      src={(messageContent.imageUrl || '').startsWith('http') 
+                        ? messageContent.imageUrl 
+                        : `${process.env.NODE_ENV === 'production' 
+                            ? 'https://chat-project1-backend.onrender.com' 
+                            : 'http://localhost:8080'}${messageContent.imageUrl}`} 
                       alt="첨부 이미지" 
                       className="rounded max-w-full max-h-64 cursor-pointer"
-                      onClick={() => window.open(messageContent.imageUrl, '_blank')}
+                      onClick={() => window.open((messageContent.imageUrl || '').startsWith('http') 
+                        ? messageContent.imageUrl 
+                        : `${process.env.NODE_ENV === 'production' 
+                            ? 'https://chat-project1-backend.onrender.com' 
+                            : 'http://localhost:8080'}${messageContent.imageUrl}`, '_blank')}
+                      onError={(e) => {
+                        console.error('이미지 로드 실패:', messageContent.imageUrl);
+                        e.currentTarget.src = 'https://via.placeholder.com/300x200?text=이미지+로드+실패';
+                      }}
                     />
                   </div>
                 )}
