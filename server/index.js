@@ -33,7 +33,7 @@ const io = new Server(server, {
 const users = {};
 
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`User connected: ${socket.id} from ${socket.handshake.headers.origin}`);
 
   // 사용자가 채팅방에 입장했을 때
   socket.on('join_room', (data) => {
@@ -50,7 +50,7 @@ io.on('connection', (socket) => {
       time: new Date().toLocaleTimeString(),
     });
     
-    console.log(`${username} joined room: ${room}`);
+    console.log(`${username} (${socket.id}) joined room: ${room}`);
   });
 
   // 메시지 수신 및 브로드캐스트
@@ -58,7 +58,7 @@ io.on('connection', (socket) => {
     const userInfo = users[socket.id];
     if (userInfo) {
       socket.to(userInfo.room).emit('receive_message', data);
-      console.log(`Message in ${userInfo.room}: ${data.message}`);
+      console.log(`Message in ${userInfo.room} from ${socket.id}: ${data.message}`);
     }
   });
 
