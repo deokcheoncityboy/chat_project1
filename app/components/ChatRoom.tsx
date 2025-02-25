@@ -6,15 +6,35 @@ import {
   onReceiveMessage, 
   onUserJoined, 
   onUserLeft,
-  disconnectSocket
+  disconnectSocket,
+  getRoomUsers,
+  onRoomUsers,
+  onRoomUsersUpdated,
+  reconnectSocket,
+  onMessageReadStatus,
+  onLastMessage,
+  updateUserActivity,
+  onReceiveMessageAll,
+  onMessageError
 } from '~/utils/socket';
 import { useNavigate } from '@remix-run/react';
 import { getMessages, subscribeToMessages, type Message as SupabaseMessage } from '~/utils/supabase';
 
 type Message = {
+  id?: string;
   username: string;
   message: string;
   time: string;
+  readBy?: string[];
+  sending?: boolean;
+  sent?: boolean;
+  error?: boolean;
+};
+
+type UserInfo = {
+  username: string;
+  online: boolean;
+  lastActive: Date | null;
 };
 
 type ChatRoomProps = {
@@ -22,11 +42,48 @@ type ChatRoomProps = {
   room: string;
 };
 
+// 시간 간격을 계산하여 "방금 전", "5분 전" 등의 형식으로 변환하는 함수
+const getTimeAgo = (date: Date | null): string => {
+  if (!date) return '알 수 없음';
+  
+  const now = new Date();
+  const diffMs = now.getTime() - new Date(date).getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
+  
+  if (diffSec < 10) return '방금 전';
+  if (diffSec < 60) return `${diffSec}초 전`;
+  if (diffMin < 60) return `${diffMin}분 전`;
+  if (diffHour < 24) return `${diffHour}시간 전`;
+  return `${diffDay}일 전`;
+};
+
 export default function ChatRoom({ username, room }: ChatRoomProps) {
   const [currentMessage, setCurrentMessage] = useState('');
   const [messageList, setMessageList] = useState<Message[]>([]);
+  const [participants, setParticipants] = useState<UserInfo[]>([]);
+  const [participantCount, setParticipantCount] = useState<number>(0);
+  const [showParticipants, setShowParticipants] = useState<boolean>(false);
+  const [isConnected, setIsConnected] = useState<boolean>(false);
   const navigate = useNavigate();
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const socket = useRef(initializeSocket());
+  const lastActivityInterval = useRef<NodeJS.Timeout | null>(null);
+
+  // 주기적인 활동 업데이트 (2분마다)
+  useEffect(() => {
+    const activityInterval = setInterval(() => {
+      if (isConnected) {
+        updateUserActivity();
+      }
+    }, 120000); // 2분마다
+    
+    return () => {
+      clearInterval(activityInterval);
+    };
+  }, [isConnected]);
 
   // 최초 렌더링 시 채팅방 입장 및 이벤트 리스너 설정
   useEffect(() => {
@@ -37,16 +94,40 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
     }
 
     // 소켓 초기화 및 채팅방 입장
-    initializeSocket();
-    joinRoom(username, room);
+    const currentSocket = initializeSocket();
+    socket.current = currentSocket;
+    
+    // 연결 상태 이벤트 리스너
+    const handleConnect = () => {
+      console.log('소켓 연결됨 - 채팅방에서 감지');
+      setIsConnected(true);
+      joinRoom(username, room);
+      getRoomUsers();
+    };
+    
+    const handleDisconnect = () => {
+      console.log('소켓 연결 끊김 - 채팅방에서 감지');
+      setIsConnected(false);
+    };
+    
+    currentSocket.on('connect', handleConnect);
+    currentSocket.on('disconnect', handleDisconnect);
+    
+    // 이미 연결되어 있으면 채팅방 입장
+    if (currentSocket.connected) {
+      setIsConnected(true);
+      joinRoom(username, room);
+    }
 
     // 이전 메시지 로드
     const loadMessages = async () => {
       const messages = await getMessages(room);
       const formattedMessages = messages.map((msg: SupabaseMessage) => ({
+        id: `stored_${msg.id}`,
         username: msg.username,
         message: msg.message,
         time: new Date(msg.created_at).toLocaleTimeString(),
+        readBy: [username] // 기존 메시지는 현재 사용자가 읽은 것으로 처리
       }));
       
       setMessageList(formattedMessages);
@@ -58,9 +139,11 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
     const subscription = subscribeToMessages(room, (newMessage) => {
       if (newMessage.username !== username) {
         const formattedMessage = {
+          id: `supabase_${newMessage.id}`,
           username: newMessage.username,
           message: newMessage.message,
           time: new Date(newMessage.created_at).toLocaleTimeString(),
+          readBy: [username] // 지금 받은 메시지를 현재 사용자가 읽은 것으로 처리
         };
         
         setMessageList((list) => [...list, formattedMessage]);
@@ -69,7 +152,32 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
 
     // 소켓 이벤트 리스너 설정
     onReceiveMessage((data) => {
-      setMessageList((list) => [...list, data]);
+      console.log('메시지 받음:', data);
+      // 이미 같은 ID의 메시지가 있는지 확인
+      setMessageList((list) => {
+        if (data.id && list.some(msg => msg.id === data.id)) {
+          return list;
+        }
+        return [...list, {...data, readBy: [username]}];
+      });
+    });
+
+    // 모든 메시지 수신 이벤트 리스너 (자신 제외)
+    onReceiveMessageAll((data) => {
+      console.log('모든 메시지 수신 이벤트:', data);
+      // 이미 같은 ID의 메시지가 있는지 확인
+      setMessageList((list) => {
+        if (data.id && list.some(msg => msg.id === data.id)) {
+          return list;
+        }
+        return [...list, {...data, readBy: [username]}];
+      });
+    });
+    
+    // 메시지 오류 이벤트 리스너
+    onMessageError((data) => {
+      console.error('메시지 전송 오류:', data);
+      alert(`메시지 전송 중 오류가 발생했습니다: ${data.error}`);
     });
 
     onUserJoined((data) => {
@@ -80,8 +188,66 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
       setMessageList((list) => [...list, data]);
     });
 
+    // 참가자 목록 이벤트 리스너 설정
+    onRoomUsers((data) => {
+      console.log('룸 유저 업데이트:', data);
+      setParticipants(data.users);
+      setParticipantCount(data.count);
+    });
+
+    onRoomUsersUpdated((data) => {
+      console.log('룸 유저 업데이트 이벤트:', data);
+      setParticipants(data.users);
+      setParticipantCount(data.count);
+    });
+    
+    // 메시지 읽음 상태 이벤트 리스너
+    onMessageReadStatus((data) => {
+      console.log('메시지 읽음 상태 업데이트:', data);
+      const { messageId, readBy } = data;
+      
+      setMessageList(prevMessages => 
+        prevMessages.map(msg => 
+          msg.id === messageId ? { ...msg, readBy } : msg
+        )
+      );
+    });
+    
+    // 마지막 메시지 이벤트 리스너
+    onLastMessage((data) => {
+      console.log('마지막 메시지 수신:', data);
+      // 채팅 기록이 없을 경우에만 마지막 메시지 추가
+      if (messageList.length === 0) {
+        setMessageList([{
+          ...data.message,
+          readBy: [username] // 현재 사용자가 읽은 것으로 처리
+        }]);
+      }
+    });
+
+    // 참가자 목록 요청
+    getRoomUsers();
+
+    // 주기적으로 참가자 목록 새로고침
+    const roomUsersInterval = setInterval(() => {
+      if (isConnected) {
+        getRoomUsers();
+      }
+    }, 10000);
+    
+    // 참가자 목록의 마지막 활동 시간 업데이트
+    lastActivityInterval.current = setInterval(() => {
+      setParticipants(prev => [...prev]); // 강제 리렌더링하여 시간 표시 업데이트
+    }, 30000); // 30초마다 업데이트
+
     // 컴포넌트 언마운트 시 정리
     return () => {
+      currentSocket.off('connect', handleConnect);
+      currentSocket.off('disconnect', handleDisconnect);
+      clearInterval(roomUsersInterval);
+      if (lastActivityInterval.current) {
+        clearInterval(lastActivityInterval.current);
+      }
       disconnectSocket();
       subscription.unsubscribe();
     };
@@ -97,23 +263,122 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
   // 메시지 전송 함수
   const handleSendMessage = async () => {
     if (currentMessage.trim() !== '') {
-      const messageData = {
-        username,
-        message: currentMessage,
-        time: new Date().toLocaleTimeString(),
-      };
+      try {
+        console.log(`메시지 전송 시작: ${currentMessage}, 사용자: ${username}, 방: ${room}`);
+        
+        if (!isConnected) {
+          console.warn('소켓 연결이 끊어진 상태에서 메시지 전송 시도');
+          alert('연결이 끊어졌습니다. 메시지를 보내기 전에 재연결해 주세요.');
+          return;
+        }
+        
+        const messageData = {
+          username,
+          message: currentMessage,
+          time: new Date().toLocaleTimeString(),
+        };
+        
+        // UI 업데이트 (낙관적 업데이트)
+        const tempId = `temp_${Date.now()}`;
+        const tempMessage = {...messageData, id: tempId, readBy: [username], sending: true};
+        setMessageList((list) => [...list, tempMessage]);
+        
+        // 메시지 입력창 초기화
+        setCurrentMessage('');
 
-      await sendMessage(currentMessage, username, room);
-      setMessageList((list) => [...list, messageData]);
-      setCurrentMessage('');
+        // 서버로 메시지 전송
+        await sendMessage(currentMessage, username, room);
+        console.log('sendMessage 함수 호출 완료');
+        
+        // 성공적으로 전송된 것으로 가정하고 임시 메시지 상태 업데이트
+        setTimeout(() => {
+          setMessageList(list => 
+            list.map(msg => 
+              msg.id === tempId 
+                ? {...msg, sending: false, sent: true} 
+                : msg
+            )
+          );
+        }, 500);
+        
+        console.log('메시지가 로컬 UI에 추가되었습니다');
+      } catch (error) {
+        console.error('메시지 전송 중 오류 발생:', error);
+        alert('메시지 전송 중 오류가 발생했습니다. 다시 시도해 주세요.');
+        
+        // 오류 발생한 메시지에 표시
+        setMessageList(list => 
+          list.map(msg => 
+            msg.sending === true 
+              ? {...msg, sending: false, error: true} 
+              : msg
+          )
+        );
+      }
     }
+  };
+
+  // 참가자 목록 토글 함수
+  const toggleParticipants = () => {
+    setShowParticipants(!showParticipants);
+  };
+  
+  // 소켓 재연결 함수
+  const handleReconnect = () => {
+    reconnectSocket();
   };
 
   return (
     <div className="flex flex-col h-[80vh] max-w-2xl mx-auto bg-white rounded-lg shadow-md overflow-hidden">
       <div className="bg-blue-600 text-white p-4">
-        <h2 className="text-xl font-semibold">채팅방: {room}</h2>
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-semibold">채팅방: {room}</h2>
+          <div className="flex items-center space-x-2">
+            <div className={`flex items-center ${isConnected ? 'text-green-200' : 'text-red-300'}`}>
+              <span className={`inline-block w-2 h-2 rounded-full mr-1 ${isConnected ? 'bg-green-400' : 'bg-red-500'}`}></span>
+              <span className="text-xs">{isConnected ? '연결됨' : '연결 끊김'}</span>
+              {!isConnected && (
+                <button 
+                  onClick={handleReconnect}
+                  className="ml-1 text-xs underline hover:text-white"
+                >
+                  재연결
+                </button>
+              )}
+            </div>
+            <button
+              onClick={toggleParticipants}
+              className="flex items-center text-sm bg-blue-700 hover:bg-blue-800 px-3 py-1 rounded-lg transition"
+            >
+              <span className="mr-1">참가자</span>
+              <span className="bg-blue-500 text-white rounded-full px-2">{participantCount}</span>
+            </button>
+          </div>
+        </div>
         <p className="text-sm opacity-80">{username}님으로 참여 중</p>
+        
+        {showParticipants && (
+          <div className="mt-2 p-2 bg-blue-700 rounded-lg">
+            <h3 className="text-sm font-semibold mb-1">참가자 목록:</h3>
+            <ul className="text-sm">
+              {participants.map((participant, index) => (
+                <li key={index} className="py-1 border-b border-blue-600 last:border-b-0 flex justify-between items-center">
+                  <div className="flex items-center">
+                    <span className={`inline-block w-2 h-2 rounded-full mr-2 ${participant.online ? 'bg-green-400' : 'bg-gray-400'}`}></span>
+                    <span>{participant.username}</span>
+                  </div>
+                  <span className="text-xs text-blue-200">
+                    {participant.online 
+                      ? '온라인' 
+                      : participant.lastActive 
+                        ? `마지막 활동: ${getTimeAgo(participant.lastActive)}` 
+                        : '오프라인'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div
@@ -148,13 +413,43 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
                   <p className="text-xs font-semibold mb-1">{messageContent.username}</p>
                 )}
                 <p>{messageContent.message}</p>
-                <span
-                  className={`text-xs ${
-                    messageContent.username === username ? 'text-blue-100' : 'text-gray-500'
-                  } block text-right`}
-                >
-                  {messageContent.time}
-                </span>
+                <div className="flex justify-between items-center mt-1">
+                  <span
+                    className={`text-xs ${
+                      messageContent.username === username ? 'text-blue-100' : 'text-gray-500'
+                    }`}
+                  >
+                    {messageContent.time}
+                    {messageContent.sending && ' (보내는 중...)'}
+                    {messageContent.error && ' (전송 실패)'}
+                  </span>
+                  
+                  {/* 읽음 확인 표시 */}
+                  {messageContent.username === username && messageContent.readBy && !messageContent.sending && !messageContent.error && (
+                    <span 
+                      className="text-xs text-blue-100"
+                      title={`읽은 사람: ${messageContent.readBy.join(', ')}`}
+                    >
+                      {messageContent.readBy.length > 1 
+                        ? `${messageContent.readBy.length - 1}명이 읽음` 
+                        : '읽지 않음'}
+                    </span>
+                  )}
+                  
+                  {/* 오류 발생한 경우 재전송 버튼 */}
+                  {messageContent.error && (
+                    <button 
+                      onClick={() => {
+                        // 오류 메시지 삭제하고 재전송
+                        setMessageList(list => list.filter(msg => msg.id !== messageContent.id));
+                        setCurrentMessage(messageContent.message);
+                      }}
+                      className="text-xs text-red-300 hover:text-white underline ml-2"
+                    >
+                      재전송
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -169,10 +464,16 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
           onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
           placeholder="메시지 입력..."
           className="flex-1 border rounded-l-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={!isConnected}
         />
         <button
           onClick={handleSendMessage}
-          className="bg-blue-600 text-white px-4 py-2 rounded-r-lg hover:bg-blue-700 transition"
+          className={`px-4 py-2 rounded-r-lg ${
+            isConnected 
+              ? 'bg-blue-600 text-white hover:bg-blue-700' 
+              : 'bg-gray-400 text-gray-200 cursor-not-allowed'
+          } transition`}
+          disabled={!isConnected}
         >
           전송
         </button>
