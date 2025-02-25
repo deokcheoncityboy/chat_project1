@@ -222,7 +222,31 @@ export default function Index() {
                   
                   <div className="mt-3 text-right">
                     <a 
-                      href={`/chat/${encodeURIComponent(roomInfo.room)}`}
+                      href="#login-form" 
+                      onClick={() => {
+                        // 채팅방 이름을 로컬 스토리지에 임시 저장
+                        if (typeof window !== 'undefined') {
+                          localStorage.setItem('selectedRoom', roomInfo.room);
+                          
+                          // 페이지 내 로그인 폼으로 스크롤
+                          const loginForm = document.getElementById('login-form');
+                          if (loginForm) {
+                            loginForm.scrollIntoView({ behavior: 'smooth' });
+                            
+                            // 로그인 폼의 방 이름 입력란에 자동 입력
+                            const roomInput = document.getElementById('room-input') as HTMLInputElement;
+                            if (roomInput) {
+                              roomInput.value = roomInfo.room;
+                              
+                              // 사용자 이름 입력란에 포커스
+                              const usernameInput = document.getElementById('username-input') as HTMLInputElement;
+                              if (usernameInput) {
+                                usernameInput.focus();
+                              }
+                            }
+                          }
+                        }
+                      }}
                       className="inline-block text-sm text-blue-600 hover:text-blue-800 transition"
                     >
                       이 방으로 입장하기 →
