@@ -111,16 +111,17 @@ export const joinRoom = (username: string, room: string): void => {
 };
 
 // 메시지 전송
-export const sendMessage = (message: string, username: string, room: string): void => {
+export const sendMessage = (message: string, username: string, room: string, imageUrl?: string | null): void => {
   const socket = initializeSocket();
   const messageData = {
     room,
     username,
     message,
     time: new Date().toLocaleTimeString(),
+    imageUrl: imageUrl || undefined
   };
   
-  console.log(`메시지 전송 시도: 방=${room}, 사용자=${username}, 메시지=${message}, 소켓ID=${socket?.id}`);
+  console.log(`메시지 전송 시도: 방=${room}, 사용자=${username}, 메시지=${message}, 이미지=${imageUrl ? '있음' : '없음'}, 소켓ID=${socket?.id}`);
   console.log(`소켓 연결 상태: ${socket.connected ? '연결됨' : '연결 안됨'}`);
   console.log('메시지 데이터:', JSON.stringify(messageData));
   
@@ -158,8 +159,11 @@ export const onReceiveMessage = (callback: (data: any) => void): void => {
     callback(data);
     
     // 메시지 읽음 상태 업데이트
-    if (data.id) {
+    if (data && data.id) {
+      console.log(`message_read 이벤트 발송: messageId=${data.id}`);
       socket.emit('message_read', { messageId: data.id });
+    } else {
+      console.warn('메시지 ID가 없어서 읽음 처리할 수 없음:', data);
     }
   });
 };
@@ -229,8 +233,11 @@ export const onReceiveMessageAll = (callback: (data: any) => void): void => {
     // 자신이 보낸 메시지는 이미 UI에 표시되어 있으므로 다른 사용자가 보낸 메시지만 처리
     if (data.senderId !== socket.id) {
       // 메시지 읽음 상태 업데이트
-      if (data.id) {
+      if (data && data.id) {
+        console.log(`message_read 이벤트 발송 (receive_message_all): messageId=${data.id}`);
         socket.emit('message_read', { messageId: data.id });
+      } else {
+        console.warn('메시지 ID가 없어서 읽음 처리할 수 없음 (receive_message_all):', data);
       }
       // 콜백 호출
       callback(data);

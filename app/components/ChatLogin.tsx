@@ -1,10 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Form } from '@remix-run/react';
 
 export default function ChatLogin() {
   const [username, setUsername] = useState('');
   const [room, setRoom] = useState('');
   const [error, setError] = useState('');
+
+  // 로컬 스토리지에서 선택된 방 정보 불러오기
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const selectedRoom = localStorage.getItem('selectedRoom');
+      if (selectedRoom) {
+        setRoom(selectedRoom);
+        // 사용 후 로컬 스토리지에서 제거
+        localStorage.removeItem('selectedRoom');
+      }
+    }
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     // 클라이언트 사이드에서만 입력 검증 수행
@@ -28,7 +40,7 @@ export default function ChatLogin() {
   };
 
   return (
-    <div className="max-w-md mx-auto bg-white rounded-lg shadow-md overflow-hidden mt-10">
+    <div id="login-form" className="max-w-md mx-auto bg-white rounded-lg shadow-md overflow-hidden mt-10">
       <div className="bg-blue-600 text-white p-4">
         <h2 className="text-xl font-semibold">채팅 애플리케이션</h2>
         <p className="text-sm opacity-80">사용자 이름과 방 이름을 입력하세요</p>
@@ -43,11 +55,11 @@ export default function ChatLogin() {
           )}
           
           <div className="mb-4">
-            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="username-input" className="block text-sm font-medium text-gray-700 mb-1">
               사용자 이름
             </label>
             <input
-              id="username"
+              id="username-input"
               name="username"
               type="text"
               value={username}
@@ -59,11 +71,11 @@ export default function ChatLogin() {
           </div>
           
           <div className="mb-6">
-            <label htmlFor="room" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="room-input" className="block text-sm font-medium text-gray-700 mb-1">
               채팅방 이름
             </label>
             <input
-              id="room"
+              id="room-input"
               name="room"
               type="text"
               value={room}

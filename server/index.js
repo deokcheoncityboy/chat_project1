@@ -4,7 +4,9 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
+import multer from 'multer';
+import fs from 'fs';
 
 // ES 모듈에서 __dirname 사용하기
 const __filename = fileURLToPath(import.meta.url);
@@ -20,6 +22,54 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// 이미지 업로드를 위한 디렉토리 생성
+const uploadsDir = join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// 이미지 저장을 위한 Multer 설정
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const roomDir = join(uploadsDir, req.body.room || 'default');
+    if (!fs.existsSync(roomDir)) {
+      fs.mkdirSync(roomDir, { recursive: true });
+    }
+    cb(null, roomDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
+    const fileExt = file.originalname.split('.').pop();
+    cb(null, `${req.body.username || 'unknown'}-${uniqueSuffix}.${fileExt}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB 제한
+  fileFilter: (req, file, cb) => {
+    // 이미지 파일만 허용
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('이미지 파일만 업로드할 수 있습니다.'));
+    }
+    cb(null, true);
+  }
+});
+
+// 이미지 업로드 API 엔드포인트
+app.post('/api/upload-image', upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: '파일이 없습니다.' });
+  }
+  
+  // 클라이언트에 이미지 URL 반환
+  const imageUrl = `/uploads/${req.body.room}/${req.file.filename}`;
+  res.json({ imageUrl });
+});
+
+// 업로드 파일 제공을 위한 정적 파일 서빙
+app.use('/uploads', express.static(uploadsDir));
 
 // CORS 디버깅 미들웨어
 app.use((req, res, next) => {
@@ -271,11 +321,23 @@ io.on('connection', (socket) => {
     if (userInfo && userInfo.room) {
       const { username, room } = userInfo;
       
+      console.log(`메시지 읽음 이벤트 수신: 사용자=${username}, 메시지ID=${messageId}, 방=${room}`);
+      
+      // 메시지 읽음 상태 초기화가 안 되었으면 처리
+      if (!messageReadStatus[room]) {
+        messageReadStatus[room] = {};
+        console.log(`메시지 읽음 상태 초기화 - 방 ${room}에 대한 상태 생성`);
+      }
+      
+      if (!messageReadStatus[room][messageId]) {
+        console.log(`메시지 읽음 상태 초기화 - 메시지 ${messageId}에 대한 상태 생성`);
+        messageReadStatus[room][messageId] = [];
+      }
+      
       // 메시지 읽음 상태 업데이트
-      if (messageReadStatus[room] && messageReadStatus[room][messageId]) {
-        if (!messageReadStatus[room][messageId].includes(username)) {
-          messageReadStatus[room][messageId].push(username);
-        }
+      if (!messageReadStatus[room][messageId].includes(username)) {
+        messageReadStatus[room][messageId].push(username);
+        console.log(`메시지 읽음 상태 업데이트: 메시지=${messageId}, 사용자=${username}, 읽은 사용자=${messageReadStatus[room][messageId].join(',')}`);
         
         // 해당 메시지 읽음 상태 브로드캐스트
         io.to(room).emit('message_read_status', {

@@ -29,6 +29,7 @@ type Message = {
   sending?: boolean;
   sent?: boolean;
   error?: boolean;
+  imageUrl?: string;
 };
 
 type UserInfo = {
@@ -67,10 +68,13 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
   const [participantCount, setParticipantCount] = useState<number>(0);
   const [showParticipants, setShowParticipants] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const navigate = useNavigate();
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const socket = useRef(initializeSocket());
   const lastActivityInterval = useRef<NodeJS.Timeout | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 주기적인 활동 업데이트 (2분마다)
   useEffect(() => {
@@ -155,8 +159,17 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
       console.log('메시지 받음:', data);
       // 이미 같은 ID의 메시지가 있는지 확인
       setMessageList((list) => {
-        if (data.id && list.some(msg => msg.id === data.id)) {
-          return list;
+        const existingMsgIndex = list.findIndex(msg => msg.id === data.id);
+        if (existingMsgIndex >= 0) {
+          // 이미 메시지가 있으면 readBy만 업데이트
+          const newList = [...list];
+          const existingMsg = newList[existingMsgIndex];
+          const readBy = existingMsg.readBy || [];
+          if (!readBy.includes(username)) {
+            readBy.push(username);
+          }
+          newList[existingMsgIndex] = { ...existingMsg, readBy };
+          return newList;
         }
         return [...list, {...data, readBy: [username]}];
       });
@@ -167,8 +180,17 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
       console.log('모든 메시지 수신 이벤트:', data);
       // 이미 같은 ID의 메시지가 있는지 확인
       setMessageList((list) => {
-        if (data.id && list.some(msg => msg.id === data.id)) {
-          return list;
+        const existingMsgIndex = list.findIndex(msg => msg.id === data.id);
+        if (existingMsgIndex >= 0) {
+          // 이미 메시지가 있으면 readBy만 업데이트
+          const newList = [...list];
+          const existingMsg = newList[existingMsgIndex];
+          const readBy = existingMsg.readBy || [];
+          if (!readBy.includes(username)) {
+            readBy.push(username);
+          }
+          newList[existingMsgIndex] = { ...existingMsg, readBy };
+          return newList;
         }
         return [...list, {...data, readBy: [username]}];
       });
@@ -207,9 +229,13 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
       const { messageId, readBy } = data;
       
       setMessageList(prevMessages => 
-        prevMessages.map(msg => 
-          msg.id === messageId ? { ...msg, readBy } : msg
-        )
+        prevMessages.map(msg => {
+          if (msg.id === messageId) {
+            console.log(`메시지 ${messageId}의 읽음 상태 업데이트: ${readBy.join(', ')}`);
+            return { ...msg, readBy };
+          }
+          return msg;
+        })
       );
     });
     
@@ -260,9 +286,45 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
     }
   }, [messageList]);
 
-  // 메시지 전송 함수
+  // 이미지 파일 선택 처리
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // 이미지 파일 유형 검사
+      if (!file.type.startsWith('image/')) {
+        alert('이미지 파일만 업로드할 수 있습니다.');
+        return;
+      }
+      
+      // 파일 크기 제한 (5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        alert('5MB 이하의 이미지만 업로드할 수 있습니다.');
+        return;
+      }
+      
+      setSelectedImage(file);
+      
+      // 이미지 미리보기 생성
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+  
+  // 이미지 선택 취소
+  const handleCancelImage = () => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // 메시지 전송 함수 수정
   const handleSendMessage = async () => {
-    if (currentMessage.trim() !== '') {
+    if ((currentMessage.trim() !== '' || selectedImage) && isConnected) {
       try {
         console.log(`메시지 전송 시작: ${currentMessage}, 사용자: ${username}, 방: ${room}`);
         
@@ -272,10 +334,35 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
           return;
         }
         
+        let imageUrl = null;
+        
+        // 이미지가 선택되었다면 먼저 업로드
+        if (selectedImage) {
+          // 이미지 업로드를 위한 폼 데이터 생성
+          const formData = new FormData();
+          formData.append('image', selectedImage);
+          formData.append('room', room);
+          formData.append('username', username);
+          
+          // 이미지 업로드 API 호출
+          const response = await fetch('/api/upload-image', {
+            method: 'POST',
+            body: formData,
+          });
+          
+          if (!response.ok) {
+            throw new Error('이미지 업로드에 실패했습니다.');
+          }
+          
+          const data = await response.json();
+          imageUrl = data.imageUrl;
+        }
+        
         const messageData = {
           username,
           message: currentMessage,
           time: new Date().toLocaleTimeString(),
+          imageUrl
         };
         
         // UI 업데이트 (낙관적 업데이트)
@@ -285,9 +372,14 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
         
         // 메시지 입력창 초기화
         setCurrentMessage('');
+        setSelectedImage(null);
+        setImagePreview(null);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
 
-        // 서버로 메시지 전송
-        await sendMessage(currentMessage, username, room);
+        // 서버로 메시지 전송 (이미지 URL 포함)
+        await sendMessage(currentMessage, username, room, imageUrl);
         console.log('sendMessage 함수 호출 완료');
         
         // 성공적으로 전송된 것으로 가정하고 임시 메시지 상태 업데이트
@@ -412,7 +504,22 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
                 {messageContent.username !== username && (
                   <p className="text-xs font-semibold mb-1">{messageContent.username}</p>
                 )}
-                <p>{messageContent.message}</p>
+                
+                {/* 이미지 표시 */}
+                {messageContent.imageUrl && (
+                  <div className="mb-2">
+                    <img 
+                      src={messageContent.imageUrl} 
+                      alt="첨부 이미지" 
+                      className="rounded max-w-full max-h-64 cursor-pointer"
+                      onClick={() => window.open(messageContent.imageUrl, '_blank')}
+                    />
+                  </div>
+                )}
+                
+                {/* 메시지 텍스트 */}
+                {messageContent.message && <p>{messageContent.message}</p>}
+                
                 <div className="flex justify-between items-center mt-1">
                   <span
                     className={`text-xs ${
@@ -427,12 +534,34 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
                   {/* 읽음 확인 표시 */}
                   {messageContent.username === username && messageContent.readBy && !messageContent.sending && !messageContent.error && (
                     <span 
-                      className="text-xs text-blue-100"
-                      title={`읽은 사람: ${messageContent.readBy.join(', ')}`}
+                      className="text-xs text-blue-100 flex items-center"
+                      title={`읽은 사람: ${messageContent.readBy?.join(', ') || ''}`}
                     >
-                      {messageContent.readBy.length > 1 
-                        ? `${messageContent.readBy.length - 1}명이 읽음` 
-                        : '읽지 않음'}
+                      {messageContent.readBy && messageContent.readBy.length > 1 ? (
+                        <>
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                          {messageContent.readBy.length - 1}명 읽음
+                          <span className="ml-1 text-xs cursor-pointer hover:underline" 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const readers = messageContent.readBy?.filter(name => name !== username) || [];
+                              alert(`읽은 사람: ${readers.length > 0 ? readers.join(', ') : '아직 없음'}`);
+                            }}
+                          >
+                            (상세)
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4" />
+                          </svg>
+                          아직 읽지 않음
+                        </>
+                      )}
                     </span>
                   )}
                   
@@ -456,6 +585,22 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
         ))}
       </div>
 
+      {/* 이미지 미리보기 영역 */}
+      {imagePreview && (
+        <div className="p-2 border-t border-gray-200">
+          <div className="relative inline-block">
+            <img src={imagePreview} alt="미리보기" className="h-20 rounded" />
+            <button 
+              onClick={handleCancelImage} 
+              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center"
+              title="이미지 취소"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="border-t p-4 flex">
         <input
           type="text"
@@ -466,6 +611,24 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
           className="flex-1 border rounded-l-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
           disabled={!isConnected}
         />
+        <input
+          type="file"
+          accept="image/*"
+          onChange={handleImageSelect}
+          className="hidden"
+          ref={fileInputRef}
+          disabled={!isConnected}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="px-3 py-2 bg-gray-200 text-gray-700 hover:bg-gray-300 transition"
+          disabled={!isConnected}
+          title="이미지 첨부"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+        </button>
         <button
           onClick={handleSendMessage}
           className={`px-4 py-2 rounded-r-lg ${
@@ -473,7 +636,7 @@ export default function ChatRoom({ username, room }: ChatRoomProps) {
               ? 'bg-blue-600 text-white hover:bg-blue-700' 
               : 'bg-gray-400 text-gray-200 cursor-not-allowed'
           } transition`}
-          disabled={!isConnected}
+          disabled={!isConnected || (!currentMessage.trim() && !selectedImage)}
         >
           전송
         </button>
