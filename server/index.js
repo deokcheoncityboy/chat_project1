@@ -14,7 +14,11 @@ const __dirname = dirname(__filename);
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: ['https://chat-project1-deokcheoncityboy.vercel.app', process.env.CLIENT_URL, 'http://localhost:5173'],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -72,6 +76,11 @@ io.on('connection', (socket) => {
       console.log(`User disconnected: ${socket.id}`);
     }
   });
+});
+
+// 루트 경로 핸들러 추가
+app.get('/', (req, res) => {
+  res.send('채팅 서버가 실행 중입니다.');
 });
 
 const PORT = process.env.PORT || 8080;
